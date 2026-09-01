@@ -38,6 +38,7 @@ not the same as CI-verified A5 execution.
 | Advanced | [Multi-projection](../../examples/advanced/multi_proj.py) | Reusable inline kernels | 1 | A2/A3, A2/A3 sim, A5, A5 sim | A2/A3, A2/A3 sim, A5 sim |
 | Advanced | [Top-k](../../examples/advanced/topk.py) | Sort and merge instructions | 1 | A2/A3, A2/A3 sim, A5, A5 sim | A2/A3, A2/A3 sim, A5 sim |
 | Advanced | [All-reduce](../../examples/advanced/allreduce.py) | L3 distributed execution | 2 | A2/A3, A2/A3 sim, A5, A5 sim | A2/A3, A2/A3 sim, A5 sim |
+| Advanced | [All-reduce (composite)](../../examples/advanced/allreduce_composite.py) | L3 collectives via `pld.tensor.allreduce` | 2 | A2/A3, A2/A3 sim, A5, A5 sim | A2/A3, A2/A3 sim, A5 sim |
 
 ## Running an example
 
@@ -59,6 +60,7 @@ comma-separated device list and requires exactly two ranks:
 
 ```bash
 python examples/advanced/allreduce.py -p a2a3 -d 0,1
+python examples/advanced/allreduce_composite.py -p a2a3 -d 0,1   # same reduction, one call
 ```
 
 The examples use synthetic fixtures. They demonstrate kernel construction and
