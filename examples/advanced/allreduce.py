@@ -13,14 +13,56 @@ Every rank contributes a row and ends up holding the element-wise sum of all
 rows, computed over the L3 distributed stack: HCCL window buffers, notify/wait
 barriers, and remote tile loads. Fixed at P=2 (two ranks).
 
-Run:  python examples/advanced/allreduce.py -p a2a3 -d 0,1
+For the same reduction written as a single ``pld.tensor.allreduce`` call, see
+``allreduce_composite.py`` next to this file.
+
+Run::
+
+    python examples/advanced/allreduce.py -p a2a3 -d 0,1
+    python examples/advanced/allreduce.py -p a2a3 -d 0,1 --size 65536
 """
+
+import sys
 
 import pypto.language as pl
 import pypto.language.distributed as pld
 
-SIZE = 256  # element-wise reduction length per rank
 N_RANKS = 2  # this example runs P=2 only; the window shapes need it statically
+
+
+def _parse_int_argv(flag: str, default: int) -> int:
+    """Read an int flag before argparse runs.
+
+    ``SIZE`` appears in the tensor type annotations, so it has to be known at
+    import time — before ``argparse`` gets a chance to run in ``__main__``.
+
+    Args:
+        flag: Flag name to look for, e.g. ``"--size"``.
+        default: Value to return when the flag is absent.
+
+    Returns:
+        The parsed integer, or ``default``.
+    """
+    for index, arg in enumerate(sys.argv):
+        if arg == flag and index + 1 < len(sys.argv):
+            return int(sys.argv[index + 1])
+        if arg.startswith(f"{flag}="):
+            return int(arg.split("=", 1)[1])
+    return default
+
+
+# Element-wise reduction length per rank; 256 FP32 = 1 KB.
+SIZE = _parse_int_argv("--size", 256)
+if SIZE < 1:
+    raise ValueError(f"--size must be positive, got {SIZE}")
+
+# Payload chunk, in elements: 4096 FP32 = 16 KiB. Staging and reducing a chunk
+# at a time keeps Vec usage at 2*CHUNK*4 bytes instead of 2*SIZE*4, so the
+# example still runs at realistic payload sizes — a single [1, SIZE] tile hits
+# the Vec limit (188,416 B on a2a3) at 64 KB/rank.
+CHUNK = min(SIZE, 4096)
+if SIZE % CHUNK:
+    raise ValueError(f"--size must be a multiple of {CHUNK} (or <= it), got {SIZE}")
 
 
 @pl.jit.incore
@@ -32,9 +74,10 @@ def reduce_step(
     my_rank: pl.Scalar[pl.INT32],
 ):
     """Mesh all-reduce on window-bound ``data`` / ``signal``."""
-    # Stage the local input into this rank's window slice.
-    local = pl.load(inp, [0, 0], [1, SIZE])
-    data = pl.store(local, [0, 0], data)
+    # Stage the local input into this rank's window slice, a chunk at a time so
+    # no full-size tile is ever live.
+    for s0 in pl.range(0, SIZE, CHUNK):
+        data = pl.store(pl.load(inp, [0, s0], [1, CHUNK]), [0, s0], data)
 
     # Barrier: notify every peer, then wait on every peer slot. The window
     # buffer is zero-initialised, so AtomicAdd + Ge(1) is safe.
@@ -56,15 +99,18 @@ def reduce_step(
                 cmp=pld.WaitCmp.Ge,
             )
 
-    # Load my own slice, then add every peer's slice via remote_load.
-    acc = pl.load(data, [0, 0], [1, SIZE])
-    for peer in pl.range(N_RANKS):
-        if peer != my_rank:
-            recv = pld.tile.remote_load(data, peer=peer, offsets=[0, 0], shape=[1, SIZE])
-            acc = pl.add(acc, recv)
+    # One barrier above, then walk the payload a chunk at a time: load my own
+    # chunk, add every peer's, write it out. The barrier count does not grow
+    # with the payload — it stays outside this loop.
+    for c0 in pl.range(0, SIZE, CHUNK):
+        acc = pl.load(data, [0, c0], [1, CHUNK])
+        for peer in pl.range(N_RANKS):
+            if peer != my_rank:
+                recv = pld.tile.remote_load(data, peer=peer, offsets=[0, c0], shape=[1, CHUNK])
+                acc = pl.add(acc, recv)
+        out = pl.store(acc, [0, c0], out)
 
-    # Store the reduced accumulator into the local output.
-    return pl.store(acc, [0, 0], out)
+    return out
 
 
 @pl.jit
@@ -130,6 +176,8 @@ if __name__ == "__main__":
                         choices=["a2a3", "a2a3sim", "a5", "a5sim"])
     parser.add_argument("-d", "--device", type=str, default="0,1",
                         help=f"comma-separated device ids (need exactly {N_RANKS})")
+    parser.add_argument("--size", type=int, default=256,
+                        help="elements per rank; read at import, repeated here for --help")
     parser.add_argument("--compile-only", action="store_true", default=False)
     args = parser.parse_args()
 

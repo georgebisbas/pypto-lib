@@ -74,6 +74,25 @@ To check compilation without executing the distributed program:
 python examples/advanced/allreduce.py -p a2a3 --compile-only -d 0,1
 ```
 
+### The same reduction as one composite call
+
+[`allreduce_composite.py`](../../examples/advanced/allreduce_composite.py) is the
+companion: the identical mesh all-reduce written as a single
+`pld.tensor.allreduce(data, signal, op=Sum, mode="mesh")`. Reading the two side
+by side shows what the composite does on your behalf and what you give up in
+control. They also barrier differently — the hand-rolled path barriers once and
+then walks the payload, the composite once per chunk.
+
+```bash
+python examples/advanced/allreduce_composite.py -p a2a3 -d 0,1
+```
+
+Both accept `--size` (elements per rank, default 256 = 1 KB FP32), read at
+import because it appears in the tensor type annotations. Both stage and read
+back a chunk at a time — 16 KiB, the granularity the composite uses internally —
+so they run at realistic payload sizes; a single `[1, SIZE]` tile would hit the
+184 KB Vec limit at 64 KB/rank.
+
 The `# ci: devices=2` marker is executable test metadata: the A2/A3 CI job
 borrows two cards for this case. It does not imply that larger world sizes are
 supported.
